@@ -15,15 +15,20 @@ def dashboard() -> dict[str, Any]:
         facts = fact_repo.list_facts(conn, day)
         open_n = sum(1 for f in facts if f["status"] == "open")
         sealed_n = sum(1 for f in facts if f["status"] == "sealed")
-        total = round(sum(float(f["amount"]) for f in facts), 2)
+        # 作废额不并入核销合计：合计只统计未作废事实。
+        total = round(
+            sum(float(f["amount"]) for f in facts if f["status"] != "void"), 2
+        )
         events = event_repo.list_events(conn, day)
         batches = batch_repo.list_batches(conn)
         sealed_today = fact_repo.day_is_sealed(conn, day)
         gate = expire_service.day_gate(conn, day)
         from app.services import void_ledger
+        # 总览「过期计数」与事实 void 态、扫描清单同口径：以权威作废集合
+        # （事件流 void ∩ 事实 void）为准，不再采信扫描批头快照。
+        effective = void_ledger.effective_void_codes(conn, day)
+        voided_facts = len(effective)
         scan = (gate.get("scan") or {}) if isinstance(gate, dict) else {}
-        claimed = int(scan.get("voided_count") or 0)
-        voided_facts = void_ledger.void_fact_count(conn, day)
         return {
             "business_day": day,
             "event_count": len(events),
@@ -34,7 +39,9 @@ def dashboard() -> dict[str, Any]:
             "batch_count": len(batches),
             "day_sealed": sealed_today,
             "expire_scan": gate,
-            "expire_count": claimed,
+            "expire_count": voided_facts,
+            "expire_void_coupons": effective,
+            "scan_listed_count": int(scan.get("voided_count") or 0),
             "void_fact_count": voided_facts,
         }
     finally:

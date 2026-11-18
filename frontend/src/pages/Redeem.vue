@@ -52,12 +52,18 @@ onMounted(load)
     <p class="msg" v-if="scanInfo.scan">
       扫描 #{{ scanInfo.scan.id }} · {{ scanInfo.scan.scanned_at }} · 发放 {{ scanInfo.scan.issued_count }} · 作废 {{ scanInfo.scan.voided_count }} · TTL {{ scanInfo.ttl_seconds }}s
     </p>
+    <p class="msg" v-if="(preview.scan_voided_coupons || []).length">
+      本扫描作废券码：{{ preview.scan_voided_coupons.join(', ') }}
+    </p>
     <div class="row">
       <button type="button" class="ghost" @click="scan" :disabled="preview.already_sealed">执行过期扫描</button>
       <button type="button" @click="seal" :disabled="!gate.allowed">钉扎本日核销</button>
       <button type="button" class="ghost" @click="load">刷新预览</button>
     </div>
     <p class="msg err" v-if="!gate.allowed && gate.reason">钉闸未开：{{ gate.reason }}</p>
+    <p class="msg err" v-if="(preview.scan_void_torn || []).length">
+      扫描清单已宣告作废但事实未落 void：{{ preview.scan_void_torn.join(', ') }}，请重新扫描后再钉。
+    </p>
     <p class="msg" v-if="msg">{{ msg }}</p>
     <p class="msg err" v-if="err">{{ err }}</p>
   </div>
@@ -78,17 +84,22 @@ onMounted(load)
   <div class="panel">
     <h3>扫描批次（{{ preview?.business_day }}）</h3>
     <table>
-      <thead><tr><th>批次</th><th>扫描时刻</th><th>发放数</th><th>作废数</th><th>覆盖至事件</th><th>状态</th></tr></thead>
+      <thead><tr><th>批次</th><th>扫描时刻</th><th>发放数</th><th>作废数</th><th>事实已 void</th><th>覆盖至事件</th><th>状态</th></tr></thead>
       <tbody>
         <tr v-for="s in scans" :key="s.id">
           <td>{{ s.id }}</td>
           <td>{{ s.scanned_at }}</td>
           <td>{{ s.issued_count }}</td>
           <td>{{ s.voided_count }}</td>
+          <td>
+            <span class="tag" :class="s.void_consistent ? 'ok' : 'warn'">
+              {{ s.voided_count_effective }}
+            </span>
+          </td>
           <td>{{ s.covered_event_id }}</td>
           <td><span class="tag" :class="s.state === 'valid' ? 'ok' : 'warn'">{{ STATE_TEXT[s.state] || s.state }}</span></td>
         </tr>
-        <tr v-if="!scans.length"><td colspan="6">尚无扫描批次</td></tr>
+        <tr v-if="!scans.length"><td colspan="7">尚无扫描批次</td></tr>
       </tbody>
     </table>
   </div>

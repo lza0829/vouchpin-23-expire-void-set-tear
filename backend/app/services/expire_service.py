@@ -16,6 +16,11 @@ from app.services import settings_service
 SCAN_POLICY = "required"
 
 
+def _is_busy(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
 def _scan_state(conn: sqlite3.Connection, business_day: str, scan: dict[str, Any]) -> tuple[str, str]:
     """单次扫描的时效状态：valid / expired(超 TTL) / stale(扫描后有新发放)。"""
     ttl = settings_service.scan_ttl_seconds(conn)
@@ -72,8 +77,19 @@ def seal_gate(conn: sqlite3.Connection, business_day: str, scan_id: int | None) 
 
 
 def run_scan(body: dict[str, Any]) -> dict[str, Any]:
-    """过期扫描：覆盖该业务日发放未核集合，作废入事件流，落扫描批次。"""
-    conn = connect(immediate=True)
+    """过期扫描：覆盖该业务日发放未核集合，作废入事件流，落扫描批次。
+
+    事务语义：整批原子提交。任何一张券写入失败或中途中断都整体回滚
+    （扫描批次、void 事件、清单行、事实 void 态全部撤销），回执不会
+    出现 success 却留下半截作废。
+    """
+    try:
+        conn = connect(immediate=True)
+    except sqlite3.OperationalError as exc:
+        if _is_busy(exc):
+            # 与钉扎交错：连写事务都抢不到，整批不开始，绝不留下半截。
+            raise HTTPException(409, "扫描与钉扎交错：请等待钉扎完成或稍后重试") from exc
+        raise
     try:
         day = body.get("business_day") or settings_repo.get(conn, "business_day")
         if fact_repo.day_is_sealed(conn, day):
@@ -90,7 +106,17 @@ def run_scan(body: dict[str, Any]) -> dict[str, Any]:
                 stop_after=int(stop_after) if stop_after not in (None, "") else None,
             )
         except RuntimeError as exc:
+            conn.rollback()
             raise HTTPException(500, str(exc)) from exc
+        except sqlite3.OperationalError as exc:
+            conn.rollback()
+            if _is_busy(exc):
+                # 与钉扎交错：等待写锁失败即整批放弃，绝不带出半截结果。
+                raise HTTPException(409, "扫描与钉扎交错：请等待钉扎完成或稍后重试") from exc
+            raise
+        except Exception:
+            conn.rollback()
+            raise
         conn.commit()
         return result
     finally:
@@ -106,6 +132,9 @@ def list_scans(business_day: str | None = None) -> list[dict[str, Any]]:
             state, reason = _scan_state(conn, day, s)
             s["state"] = state
             s["state_reason"] = reason
+            voided = scan_repo.void_items_for_scan(conn, int(s["id"]))
+            s["voided_count_effective"] = len(voided)
+            s["void_consistent"] = len(voided) == int(s.get("voided_count") or 0)
         return scans
     finally:
         conn.close()
@@ -120,7 +149,16 @@ def scan_detail(scan_id: int) -> dict[str, Any]:
         state, reason = _scan_state(conn, scan["business_day"], scan)
         scan["state"] = state
         scan["state_reason"] = reason
-        scan["items"] = scan_repo.items_for_scan(conn, scan_id)
+        declared = scan_repo.items_for_scan(conn, scan_id)
+        voided_codes = {
+            str(i["coupon_code"]) for i in scan_repo.void_items_for_scan(conn, scan_id)
+        }
+        # 事实 void 态为准：重算扫描清单，只有事实已 void 的券码才算「已作废」。
+        effective = [i for i in declared if str(i["coupon_code"]) in voided_codes]
+        scan["items"] = effective
+        scan["declared_items"] = declared
+        scan["voided_count_effective"] = len(effective)
+        scan["void_consistent"] = len(effective) == len(declared)
         return scan
     finally:
         conn.close()

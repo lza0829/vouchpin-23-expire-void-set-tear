@@ -23,6 +23,7 @@ onMounted(load)
       <div class="stat"><div class="k">今日核销额</div><div class="v ticket">{{ d.redeem_total_today }}</div></div>
       <div class="stat"><div class="k">日已钉扎</div><div class="v">{{ d.day_sealed ? '是' : '否' }}</div></div>
       <div class="stat"><div class="k">过期计数</div><div class="v">{{ d.expire_count }}</div></div>
+      <div class="stat"><div class="k">作废事实</div><div class="v">{{ d.void_fact_count }}</div></div>
       <div class="stat">
         <div class="k">过期扫描</div>
         <div class="v"><span class="tag" :class="scanState === 'valid' ? 'ok' : 'warn'">{{ STATE_TEXT[scanState] || scanState }}</span></div>

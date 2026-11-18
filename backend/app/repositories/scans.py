@@ -71,6 +71,15 @@ def get_scan(conn: sqlite3.Connection, scan_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def update_scan_counts(
+    conn: sqlite3.Connection, scan_id: int, *, issued_count: int, voided_count: int
+) -> None:
+    conn.execute(
+        "UPDATE expire_scans SET issued_count=?, voided_count=? WHERE id=?",
+        (int(issued_count), int(voided_count), int(scan_id)),
+    )
+
+
 def latest_scan_for_day(conn: sqlite3.Connection, business_day: str) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM expire_scans WHERE business_day=? ORDER BY id DESC LIMIT 1",
@@ -106,6 +115,25 @@ def insert_item(conn: sqlite3.Connection, **fields: Any) -> int:
 def items_for_scan(conn: sqlite3.Connection, scan_id: int) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT * FROM expire_scan_items WHERE scan_id=? ORDER BY id",
+        (int(scan_id),),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def void_items_for_scan(conn: sqlite3.Connection, scan_id: int) -> list[dict[str, Any]]:
+    """扫描清单 ∩ 事实 void 态：只保留真正落成 void 的清单行。
+
+    「事实 void 态为准」：扫描清单是作废的宣告，事实才是落定结果。
+    清单行若对应事实未 void（历史撕裂/半截写入），不得继续对外宣称作废。
+    """
+    rows = conn.execute(
+        """
+        SELECT i.* FROM expire_scan_items i
+        JOIN redeem_facts f
+          ON f.coupon_code = i.coupon_code AND f.status = 'void'
+        WHERE i.scan_id=?
+        ORDER BY i.id
+        """,
         (int(scan_id),),
     ).fetchall()
     return [dict(r) for r in rows]

@@ -42,6 +42,9 @@ def add_event(body: dict[str, Any]) -> dict[str, Any]:
         if et == "issue" and fact_repo.day_is_sealed(conn, day):
             # 钉扎后当日发放集合冻结，保证钉闸审计的「发放未核集合」不再变动
             raise HTTPException(409, f"业务日 {day} 已钉扎，禁止再写入发放")
+        if et == "redeem" and event_repo.has_void_event(conn, code):
+            # 已作废券码不得再生核销事实，避免「同码双态」。
+            raise HTTPException(409, f"券码 {code} 已作废，禁止再写入核销")
         amount = float(body.get("amount") or 0)
         if et == "redeem" and amount <= 0:
             # default face value from campaign
@@ -73,6 +76,16 @@ def add_event(body: dict[str, Any]) -> dict[str, Any]:
                 )
             except Exception as e:
                 raise HTTPException(409, f"核销事实写入失败（可能券码已核销）: {e}") from e
+        elif et == "void":
+            # 事件流 void 是权威记录：手工作废也必须让事实与 sealed 明细同步，
+            # 否则会出现「事件已作废、事实仍 open / 仍在 sealed」的双态。
+            fact = fact_repo.fact_by_coupon(conn, code)
+            if fact is not None:
+                fact_repo.mark_status(conn, int(fact["id"]), "void")
+                if fact["batch_id"] is not None:
+                    from app.repositories import batches as batch_repo
+
+                    batch_repo.recompute_batch(conn, int(fact["batch_id"]))
         conn.commit()
         return {"event_id": eid, "fact_id": fact_id, "business_day": day}
     finally:

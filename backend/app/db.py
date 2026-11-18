@@ -1,6 +1,11 @@
 from __future__ import annotations
+import os
 import sqlite3
 from app.config import DB_PATH
+
+# 写锁等待上限（秒）。扫描与钉扎交错时，后来者先等待；超时即失败并由
+# 服务层转成 409，绝不带着未提交的扫描中间态继续钉扎。
+LOCK_TIMEOUT_SECONDS = float(os.environ.get("SQLITE_LOCK_TIMEOUT", "5.0"))
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS settings (
@@ -75,7 +80,9 @@ _BATCH_NEW_COLUMNS = {
 
 
 def connect(immediate: bool = False) -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    # timeout：写锁竞争（如扫描与钉扎交错）时先等待，超时再报错，
+    # 由调用方转成 409「请等待或重试」，避免静默读到扫描中间态。
+    conn = sqlite3.connect(DB_PATH, timeout=LOCK_TIMEOUT_SECONDS, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     if immediate:
         conn.execute("BEGIN IMMEDIATE")
